@@ -1,0 +1,9 @@
+Pillow
+numpy
+pandas
+pdf2image
+pillow
+plotly 
+pydeck
+pytesseract
+streamlit
