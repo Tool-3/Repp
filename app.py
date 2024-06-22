@@ -1,53 +1,49 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import pydeck as pdk
-import plotly.express as px
+from flask import Flask, request, jsonify
 import pytesseract
-from PIL import Image
-import pdf2image
+import cv2
+import numpy as np
+import pandas as pd
 import os
 
-# Set up Tesseract OCR engine path (adjust if necessary)
-pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract' 
+app = Flask(__name__)
 
-# --- Helper Functions ---
-@st.cache_data  # Cache the OCR process for efficiency
-def perform_ocr(file_path):
-    """Performs OCR on the given image or PDF file."""
-    if file_path.endswith(".pdf"):
-        images = pdf2image.convert_from_path(file_path)
-        text = "".join(pytesseract.image_to_string(image) for image in images)
-    else:
-        image = Image.open(file_path)
-        text = pytesseract.image_to_string(image)
+# Set the path to the Tesseract executable
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'  # Update this path
+
+def extract_text(image_path):
+    img = cv2.imread(image_path)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    text = pytesseract.image_to_string(gray)
     return text
 
-# --- Main Streamlit App ---
-def main():
-    st.title("Invoice OCR Application")
+def extract_table(image_path):
+    img = cv2.imread(image_path)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    df = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DATAFRAME)
+    df = df[df.text.notna()]
+    return df.to_json(orient='records')
 
-    uploaded_file = st.file_uploader(
-        "Upload an invoice image (JPG, PNG, or PDF)", type=["jpg", "png", "pdf"]
-    )
+@app.route('/extract', methods=['POST'])
+def extract():
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part"}), 400
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+    if file and file.filename.endswith(('.png', '.jpg', '.jpeg')):
+        file_path = os.path.join('uploads', file.filename)
+        file.save(file_path)
+        text = extract_text(file_path)
+        table = extract_table(file_path)
+        os.remove(file_path)
+        return jsonify({
+            "text": text,
+            "table": table
+        })
+    else:
+        return jsonify({"error": "Invalid file type"}), 400
 
-    if uploaded_file is not None:
-        with st.spinner("Processing..."):
-            try:
-                # Create a temporary file
-                with open("temp_file", "wb") as temp_file:
-                    temp_file.write(uploaded_file.read())
-
-                extracted_text = perform_ocr("temp_file")
-                os.remove("temp_file")  # Clean up the temporary file
-
-                st.write("### Extracted Text")
-                st.text_area(" ", value=extracted_text, height=400)
-
-            except Exception as e:
-                st.error(f"An error occurred: {e}")
-
-
-if __name__ == "__main__":
-    main()
-
+if __name__ == '__main__':
+    if not os.path.exists('uploads'):
+        os.makedirs('uploads')
+    app.run(debug=True)
