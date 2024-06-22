@@ -1,49 +1,56 @@
-from flask import Flask, request, jsonify
-import pytesseract
 import cv2
 import numpy as np
+import pytesseract
+from PIL import Image
 import pandas as pd
-import os
+from fastapi import FastAPI, File, UploadFile
+from fastapi.responses import JSONResponse
+import io
 
-app = Flask(__name__)
+# Ensure pytesseract is in your PATH or specify the path:
+# pytesseract.pytesseract.tesseract_cmd = r'/path/to/tesseract'
 
-# Set the path to the Tesseract executable
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'  # Update this path
+app = FastAPI()
 
-def extract_text(image_path):
-    img = cv2.imread(image_path)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    text = pytesseract.image_to_string(gray)
-    return text
+def preprocess_image(image):
+    # Convert to grayscale
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    # Apply thresholding
+    _, threshold = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return threshold
 
-def extract_table(image_path):
-    img = cv2.imread(image_path)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    df = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DATAFRAME)
-    df = df[df.text.notna()]
-    return df.to_json(orient='records')
+def extract_text(image):
+    # Preprocess the image
+    preprocessed = preprocess_image(image)
+    # Extract text using pytesseract
+    text = pytesseract.image_to_string(preprocessed)
+    return text.strip()
 
-@app.route('/extract', methods=['POST'])
-def extract():
-    if 'file' not in request.files:
-        return jsonify({"error": "No file part"}), 400
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "No selected file"}), 400
-    if file and file.filename.endswith(('.png', '.jpg', '.jpeg')):
-        file_path = os.path.join('uploads', file.filename)
-        file.save(file_path)
-        text = extract_text(file_path)
-        table = extract_table(file_path)
-        os.remove(file_path)
-        return jsonify({
-            "text": text,
-            "table": table
-        })
-    else:
-        return jsonify({"error": "Invalid file type"}), 400
+def extract_tabular_data(image):
+    # Preprocess the image
+    preprocessed = preprocess_image(image)
+    # Extract table data using pytesseract
+    data = pytesseract.image_to_data(preprocessed, output_type=pytesseract.Output.DATAFRAME)
+    # Filter out empty text
+    data = data[data.text.notnull()]
+    # Group by line number
+    lines = data.groupby('line_num')['text'].apply(' '.join).reset_index()
+    return lines.to_dict('records')
 
-if __name__ == '__main__':
-    if not os.path.exists('uploads'):
-        os.makedirs('uploads')
-    app.run(debug=True)
+@app.post("/extract_text")
+async def extract_text_api(file: UploadFile = File(...)):
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    
+    text = extract_text(image)
+    tabular_data = extract_tabular_data(image)
+    
+    return JSONResponse({
+        "non_tabular_text": text,
+        "tabular_data": tabular_data
+    })
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
